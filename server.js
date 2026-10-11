@@ -112,7 +112,33 @@ ${code}`;
     res.status(500).json({ error: err.message || 'Summarization failed across all models.' });
   }
 });
+app.post('/api/generate-code', async (req, res) => {
+  try {
+    const { prompt, language = 'javascript' } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'A prompt is required to generate code.' });
+    }
 
+    const systemPrompt = `You are an expert software engineer.
+Generate clean, production-ready, well-commented ${language} code based on this user request:
+"${prompt}"
+
+Respond ONLY with valid JSON in this exact structure:
+{
+  "code": "/* the raw generated code here without markdown ticks */",
+  "explanation": "Brief explanation of what the code does"
+}`;
+
+    const response = await generateWithFallback(systemPrompt, {
+      responseMimeType: 'application/json'
+    });
+    const parsed = cleanAndParseJson(response.text);
+    res.json(parsed);
+  } catch (err) {
+    console.error('All fallback models failed for Generate:', err.message, err.cause || '');
+    res.status(500).json({ error: err.message || 'Code generation failed across all models.' });
+  }
+});
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI Fixer Engine running on http://localhost:${PORT}`);
