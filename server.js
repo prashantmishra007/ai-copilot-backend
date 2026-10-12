@@ -1,55 +1,65 @@
-import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const apiKey = process.env.GEMINI_API_KEY;
+if (!apiKey) {
+  console.error('Warning: GEMINI_API_KEY is not defined in your env file.');
+}
 
-// Fallback models order
-const fallbackModels = [
+const ai = new GoogleGenAI({ apiKey });
+
+// Waterfall Failover Models: Ek fail hoga to agla automatically chalega
+const FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
   'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-2.0-flash-exp',
-  'gemini-1.0-pro'
+  'gemini-1.5-pro'
 ];
 
-// Reusable robust generator with automatic fallback
-async function generateWithFallback(prompt, generationConfig = {}) {
+// Helper: Safely parse JSON from AI response
+function cleanAndParseJson(text) {
+  if (!text) return {};
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    return { error: 'Invalid JSON format', raw: text };
+  }
+}
+
+// Waterfall Failover Generator Engine
+async function generateWithFallback(prompt, config = {}) {
   let lastError = null;
 
-  for (const modelName of fallbackModels) {
+  for (const model of FALLBACK_MODELS) {
     try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        generationConfig
+      console.log(`Attempting request with model: ${model}...`);
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config
       });
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return { text: response.text() };
+      console.log(`Success using model: ${model}`);
+      return response;
     } catch (err) {
-      console.warn(`Model ${modelName} failed:`, err.message);
+      console.warn(`Model ${model} failed (${err.message || 'Unavailable'}). Shifting to next model...`);
       lastError = err;
     }
   }
 
   throw lastError || new Error('All fallback models failed to generate content.');
-}
-
-// JSON cleaner helper
-function cleanAndParseJson(rawText) {
-  try {
-    const cleaned = rawText
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .trim();
-    return JSON.parse(cleaned);
-  } catch (err) {
-    return { error: 'Invalid JSON format from AI', raw: rawText };
-  }
 }
 
 // Health Check
@@ -65,7 +75,7 @@ app.post('/api/fix-code', async (req, res) => {
       return res.status(400).json({ error: 'Code is required.' });
     }
 
-    const systemPrompt = `You are an expert senior software engineer. Fix, refactor, and optimize the following ${language} code. Fix bugs, improve performance, and enhance readability while keeping the original logic intact.
+    const prompt = `You are an expert senior software engineer. Fix, refactor, and optimize the following ${language} code. Fix bugs, improve performance, and enhance readability while keeping the original logic intact.
 
 Return ONLY a valid JSON object with exact keys:
 {
@@ -76,7 +86,7 @@ Return ONLY a valid JSON object with exact keys:
 Code to fix:
 ${code}`;
 
-    const response = await generateWithFallback(systemPrompt, {
+    const response = await generateWithFallback(prompt, {
       responseMimeType: 'application/json'
     });
     const parsed = cleanAndParseJson(response.text);
@@ -95,7 +105,7 @@ app.post('/api/summarize-code', async (req, res) => {
       return res.status(400).json({ error: 'Code is required.' });
     }
 
-    const systemPrompt = `Analyze and summarize the following ${language} code. 
+    const prompt = `Analyze and summarize the following ${language} code. 
 Return ONLY a valid JSON object with exact keys:
 {
   "summary": "a clear breakdown of what the code does",
@@ -105,7 +115,7 @@ Return ONLY a valid JSON object with exact keys:
 Code:
 ${code}`;
 
-    const response = await generateWithFallback(systemPrompt, {
+    const response = await generateWithFallback(prompt, {
       responseMimeType: 'application/json'
     });
     const parsed = cleanAndParseJson(response.text);
@@ -132,12 +142,12 @@ app.post('/api/generate-code', async (req, res) => {
     const parsed = cleanAndParseJson(response.text);
     res.json(parsed);
   } catch (err) {
-    console.error('All fallback models failed for Generate:', err.message, err.cause || '');
+    console.error('All fallback models failed for Generate:', err.message);
     res.status(500).json({ error: err.message || 'Code generation failed across all models.' });
   }
 });
 
-// 4. Robust Multi-Turn Chat Endpoint
+// 4. Multi-Turn AI Chat Endpoint (With Waterfall Fallback)
 app.post('/api/chat', async (req, res) => {
   try {
     const { message, history = [] } = req.body;
@@ -148,7 +158,7 @@ app.post('/api/chat', async (req, res) => {
     let conversationPrompt = 
       "You are an expert AI software engineer and pair programmer inside VS Code.\n" +
       "Help the developer write, refactor, debug, and explain code.\n" +
-      "Always provide clean code inside markdown code blocks (e.g. ```javascript ... ```).\n" +
+      "Always provide clean code inside standard markdown code blocks (e.g. ```javascript ... ```).\n" +
       "Support English, Hindi, and Hinglish naturally based on user input.\n\n";
 
     if (history && history.length > 0) {
@@ -163,9 +173,7 @@ app.post('/api/chat', async (req, res) => {
     conversationPrompt += `Developer: ${message}\nAI Assistant:`;
 
     const response = await generateWithFallback(conversationPrompt);
-    const reply = typeof response === 'string' ? response : (response.text || response);
-
-    res.json({ reply });
+    res.json({ reply: response.text });
   } catch (err) {
     console.error('Chat endpoint error:', err);
     res.status(500).json({ error: err.message || 'Chat service error.' });
