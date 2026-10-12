@@ -139,6 +139,55 @@ Respond ONLY with valid JSON in this exact structure:
     res.status(500).json({ error: err.message || 'Code generation failed across all models.' });
   }
 });
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, history = [] } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required.' });
+    }
+
+    // Format chat history for Gemini API
+    const formattedHistory = history.map(item => ({
+      role: item.role === 'user' ? 'user' : 'model',
+      parts: [{ text: item.text || '' }]
+    }));
+
+    const systemInstruction = 
+      "You are an expert AI pair programmer embedded inside VS Code. " +
+      "Help the developer write, debug, explain, and refactor code. " +
+      "Provide clean code inside standard markdown code blocks (e.g., ```javascript ... ```). " +
+      "Answer naturally in English, Hindi, or Hinglish depending on what the user uses.";
+
+    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+    let reply = null;
+
+    for (const modelName of models) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          systemInstruction: systemInstruction
+        });
+        const chat = model.startChat({
+          history: formattedHistory
+        });
+        const result = await chat.sendMessage(message);
+        reply = result.response.text();
+        if (reply) break;
+      } catch (err) {
+        console.warn(`Model ${modelName} failed for chat:`, err.message);
+      }
+    }
+
+    if (!reply) {
+      return res.status(500).json({ error: 'All Gemini fallback models failed to respond.' });
+    }
+
+    res.json({ reply });
+  } catch (err) {
+    console.error('Chat endpoint error:', err);
+    res.status(500).json({ error: err.message || 'Chat service error.' });
+  }
+});
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI Fixer Engine running on http://localhost:${PORT}`);
