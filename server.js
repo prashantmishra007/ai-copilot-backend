@@ -1,133 +1,130 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
-
-dotenv.config();
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) {
-  console.error('Warning: GEMINI_API_KEY is not defined in your .env file.');
-}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-const ai = new GoogleGenAI({ apiKey });
-
-// Waterfall list of models: shifts down automatically if high demand (503) or rate limits occur
-const FALLBACK_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash'
+// Fallback models order
+const fallbackModels = [
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-2.0-flash-exp',
+  'gemini-1.0-pro'
 ];
 
-// Helper to strip markdown code fences safely before JSON parsing
-function cleanAndParseJson(text) {
-  if (!text) return {};
-  const cleaned = text
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  return JSON.parse(cleaned);
-}
+// Reusable robust generator with automatic fallback
+async function generateWithFallback(prompt, generationConfig = {}) {
+  let lastError = null;
 
-// Multi-model executor with automatic failover
-async function generateWithFallback(prompt, config = {}) {
-  let lastError;
-  for (const model of FALLBACK_MODELS) {
+  for (const modelName of fallbackModels) {
     try {
-      console.log(`Attempting request with model: ${model}...`);
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig
       });
-      console.log(`Success using model: ${model}`);
-      return response;
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      return { text: response.text() };
     } catch (err) {
-      console.warn(`Model ${model} failed (${err.message || 'Unavailable'}). Shifting to next model...`);
+      console.warn(`Model ${modelName} failed:`, err.message);
       lastError = err;
     }
   }
-  throw lastError;
+
+  throw lastError || new Error('All fallback models failed to generate content.');
 }
 
-// Endpoint 1: Fix & Refactor
+// JSON cleaner helper
+function cleanAndParseJson(rawText) {
+  try {
+    const cleaned = rawText
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .trim();
+    return JSON.parse(cleaned);
+  } catch (err) {
+    return { error: 'Invalid JSON format from AI', raw: rawText };
+  }
+}
+
+// Health Check
+app.get('/', (req, res) => {
+  res.send('AI Copilot Cloud Engine is live and operational!');
+});
+
+// 1. Fix & Refactor Endpoint
 app.post('/api/fix-code', async (req, res) => {
-  const { code, language } = req.body;
-  if (!code) return res.status(400).json({ error: 'Code is required.' });
+  try {
+    const { code, language = 'javascript' } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: 'Code is required.' });
+    }
 
-  const prompt = `You are an expert developer and code refactor engine.
-Analyze and repair the following ${language || 'code'} snippet.
-Fix bugs, correct syntax errors, and optimize performance.
-Return strictly a valid JSON object without markdown fences:
+    const systemPrompt = `You are an expert senior software engineer. Fix, refactor, and optimize the following ${language} code. Fix bugs, improve performance, and enhance readability while keeping the original logic intact.
+
+Return ONLY a valid JSON object with exact keys:
 {
-  "fixedCode": "the corrected code here",
-  "explanation": "brief summary of improvements made"
+  "fixedCode": "the optimized and fixed code string",
+  "explanation": "brief description of fixes and enhancements"
 }
 
-Code:
+Code to fix:
 ${code}`;
 
-  try {
-    const response = await generateWithFallback(prompt, {
+    const response = await generateWithFallback(systemPrompt, {
       responseMimeType: 'application/json'
     });
     const parsed = cleanAndParseJson(response.text);
     res.json(parsed);
   } catch (err) {
-    console.error('All fallback models failed for Fix:', err.message, err.cause || '');
-    res.status(500).json({ error: err.message || 'Fix failed across all models.' });
+    console.error('All fallback models failed for Fix:', err.message);
+    res.status(500).json({ error: err.message || 'Code refactoring failed across all models.' });
   }
 });
 
-// Endpoint 2: Summarize & Explain Code
+// 2. Summarize Endpoint
 app.post('/api/summarize-code', async (req, res) => {
-  const { code, language } = req.body;
-  if (!code) return res.status(400).json({ error: 'Code is required.' });
+  try {
+    const { code, language = 'javascript' } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: 'Code is required.' });
+    }
 
-  const prompt = `You are an AI code reviewer. Summarize what this ${language || 'code'} file/snippet does in clear, concise bullet points.
-Return strictly a valid JSON object without markdown fences:
+    const systemPrompt = `Analyze and summarize the following ${language} code. 
+Return ONLY a valid JSON object with exact keys:
 {
-  "summary": "plain text overview with bullet points",
-  "suggestions": "optional improvement suggestions"
+  "summary": "a clear breakdown of what the code does",
+  "suggestions": "recommended optimizations or security tips"
 }
 
 Code:
 ${code}`;
 
-  try {
-    const response = await generateWithFallback(prompt, {
+    const response = await generateWithFallback(systemPrompt, {
       responseMimeType: 'application/json'
     });
     const parsed = cleanAndParseJson(response.text);
     res.json(parsed);
   } catch (err) {
-    console.error('All fallback models failed for Summarize:', err.message, err.cause || '');
+    console.error('All fallback models failed for Summarize:', err.message);
     res.status(500).json({ error: err.message || 'Summarization failed across all models.' });
   }
 });
+
+// 3. Generate Fresh Code Endpoint
 app.post('/api/generate-code', async (req, res) => {
   try {
     const { prompt, language = 'javascript' } = req.body;
     if (!prompt) {
-      return res.status(400).json({ error: 'A prompt is required to generate code.' });
+      return res.status(400).json({ error: 'Prompt is required.' });
     }
 
-    const systemPrompt = `You are an expert software engineer.
-Generate clean, production-ready, well-commented ${language} code based on this user request:
-"${prompt}"
-
-Respond ONLY with valid JSON in this exact structure:
-{
-  "code": "/* the raw generated code here without markdown ticks */",
-  "explanation": "Brief explanation of what the code does"
-}`;
+    const systemPrompt = `You are an expert software engineer. Generate high quality ${language} code based on this request: "${prompt}". Return ONLY a JSON object with two fields: "code" (the generated code string) and "explanation" (a concise summary of what was built). Do NOT wrap in markdown outside the JSON.`;
 
     const response = await generateWithFallback(systemPrompt, {
       responseMimeType: 'application/json'
@@ -139,6 +136,8 @@ Respond ONLY with valid JSON in this exact structure:
     res.status(500).json({ error: err.message || 'Code generation failed across all models.' });
   }
 });
+
+// 4. Robust Multi-Turn Chat Endpoint
 app.post('/api/chat', async (req, res) => {
   try {
     const { message, history = [] } = req.body;
@@ -146,41 +145,25 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Message is required.' });
     }
 
-    // Format chat history for Gemini API
-    const formattedHistory = history.map(item => ({
-      role: item.role === 'user' ? 'user' : 'model',
-      parts: [{ text: item.text || '' }]
-    }));
+    let conversationPrompt = 
+      "You are an expert AI software engineer and pair programmer inside VS Code.\n" +
+      "Help the developer write, refactor, debug, and explain code.\n" +
+      "Always provide clean code inside markdown code blocks (e.g. ```javascript ... ```).\n" +
+      "Support English, Hindi, and Hinglish naturally based on user input.\n\n";
 
-    const systemInstruction = 
-      "You are an expert AI pair programmer embedded inside VS Code. " +
-      "Help the developer write, debug, explain, and refactor code. " +
-      "Provide clean code inside standard markdown code blocks (e.g., ```javascript ... ```). " +
-      "Answer naturally in English, Hindi, or Hinglish depending on what the user uses.";
-
-    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
-    let reply = null;
-
-    for (const modelName of models) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          systemInstruction: systemInstruction
-        });
-        const chat = model.startChat({
-          history: formattedHistory
-        });
-        const result = await chat.sendMessage(message);
-        reply = result.response.text();
-        if (reply) break;
-      } catch (err) {
-        console.warn(`Model ${modelName} failed for chat:`, err.message);
-      }
+    if (history && history.length > 0) {
+      conversationPrompt += "--- Conversation History ---\n";
+      history.forEach(item => {
+        const roleName = item.role === 'user' ? 'Developer' : 'AI Assistant';
+        conversationPrompt += `${roleName}: ${item.text}\n\n`;
+      });
+      conversationPrompt += "--- End of History ---\n\n";
     }
 
-    if (!reply) {
-      return res.status(500).json({ error: 'All Gemini fallback models failed to respond.' });
-    }
+    conversationPrompt += `Developer: ${message}\nAI Assistant:`;
+
+    const response = await generateWithFallback(conversationPrompt);
+    const reply = typeof response === 'string' ? response : (response.text || response);
 
     res.json({ reply });
   } catch (err) {
@@ -188,6 +171,7 @@ app.post('/api/chat', async (req, res) => {
     res.status(500).json({ error: err.message || 'Chat service error.' });
   }
 });
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI Fixer Engine running on http://localhost:${PORT}`);
