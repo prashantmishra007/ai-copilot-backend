@@ -16,12 +16,11 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-// Waterfall Failover Models: Ek fail hoga to agla automatically chalega
+// Active 3.x Waterfall Fallback Models
 const FALLBACK_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro'
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite'
 ];
 
 // Helper: Safely parse JSON from AI response
@@ -39,7 +38,7 @@ function cleanAndParseJson(text) {
   }
 }
 
-// Waterfall Failover Generator Engine
+// Multi-model Waterfall Generator Engine
 async function generateWithFallback(prompt, config = {}) {
   let lastError = null;
 
