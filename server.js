@@ -16,12 +16,18 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
-// Active 3.x Waterfall Fallback Models
+// AI Studio ke Verified Active Models (Ordered by Speed & Reliability)
 const FALLBACK_MODELS = [
   'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash-lite'
+  'gemini-flash-latest',
+  'gemini-3.5-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3.1-flash-lite',
+  'gemini-pro-latest'
 ];
+
+// Helper: 1 second delay for spikes
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Helper: Safely parse JSON from AI response
 function cleanAndParseJson(text) {
@@ -38,23 +44,26 @@ function cleanAndParseJson(text) {
   }
 }
 
-// Multi-model Waterfall Generator Engine
+// Multi-model Waterfall Generator Engine with Backoff
 async function generateWithFallback(prompt, config = {}) {
   let lastError = null;
 
-  for (const model of FALLBACK_MODELS) {
+  for (let i = 0; i < FALLBACK_MODELS.length; i++) {
+    const model = FALLBACK_MODELS[i];
     try {
-      console.log(`Attempting request with model: ${model}...`);
+      console.log(`[Waterfall] Trying model (${i + 1}/${FALLBACK_MODELS.length}): ${model}...`);
       const response = await ai.models.generateContent({
         model,
         contents: prompt,
         config
       });
-      console.log(`Success using model: ${model}`);
+      console.log(`[Waterfall] Success with model: ${model}`);
       return response;
     } catch (err) {
-      console.warn(`Model ${model} failed (${err.message || 'Unavailable'}). Shifting to next model...`);
+      console.warn(`[Waterfall] Model ${model} failed (${err.message || '503 High Demand'}). Retrying next model...`);
       lastError = err;
+      // 503 spike clear karne ke liye short pause
+      await delay(800);
     }
   }
 
@@ -181,5 +190,5 @@ app.post('/api/chat', async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`AI Fixer Engine running on http://localhost:${PORT}`);
+  console.log(`AI Fixer Engine running on port ${PORT}`);
 });
